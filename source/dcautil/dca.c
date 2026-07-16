@@ -522,6 +522,69 @@ static inline void formatCount(char* buffer, size_t size, int count)
     snprintf(buffer, size, "%d", count);
 }
 
+/**
+ * @brief Count represented by one marker match.
+ *
+ * rdk-logger replaces suppressed repetitions with summary lines that carry
+ * the number of dropped occurrences:
+ *   [SUPPRESS] "<message>" repeated N times (...)
+ *     Suppressed: "<message>" repeated N times
+ * A marker found inside the quoted message of such a line counts N; every
+ * other match counts 1.
+ */
+static int getSuppressedCountIncrement(const char* line_start, size_t line_len,
+                                       const char* match_pos)
+{
+    static const char token[] = "\" repeated ";
+    const size_t token_len = sizeof(token) - 1;
+    const char* line_end = line_start + line_len;
+    const char* repeated = NULL;
+    const char* cur = line_start;
+
+    if (strnstr(line_start, "[SUPPRESS] \"", line_len) == NULL &&
+        strnstr(line_start, " Suppressed: \"", line_len) == NULL)
+    {
+        return 1;
+    }
+
+    /* The quoted message may itself contain the token, so use the last one. */
+    while ((size_t)(line_end - cur) >= token_len)
+    {
+        const char* found = strnstr(cur, token, (size_t)(line_end - cur));
+        if (!found)
+        {
+            break;
+        }
+        repeated = found;
+        cur = found + 1;
+    }
+
+    if (!repeated || match_pos >= repeated)
+    {
+        return 1;
+    }
+
+    /* Parse within the line; the mapped log file is not NUL terminated. */
+    const char* digit = repeated + token_len;
+    long count = 0;
+    while (digit < line_end && isdigit((unsigned char)*digit))
+    {
+        count = count * 10 + (*digit - '0');
+        if (count > INT_MAX)
+        {
+            return 1;
+        }
+        digit++;
+    }
+
+    if (count == 0 || (size_t)(line_end - digit) < 6 || strncmp(digit, " times", 6) != 0)
+    {
+        return 1;
+    }
+
+    return (int)count;
+}
+
 static int getCountPatternMatch(FileDescriptor* fileDescriptor, GrepMarker* marker)
 {
     T2Debug("%s ++in\n", __FUNCTION__);
@@ -570,7 +633,20 @@ static int getCountPatternMatch(FileDescriptor* fileDescriptor, GrepMarker* mark
             {
                 break;
             }
-            count++;
+
+            const char* line_start = found;
+            while (line_start > buffer && *(line_start - 1) != '\n')
+            {
+                line_start--;
+            }
+
+            const char* scan_end = buffer + buflen;
+            const char* next_nl = memchr(found, '\n', (size_t)(scan_end - found));
+            const char* line_end = next_nl ? next_nl : scan_end;
+            size_t line_len = (size_t)(line_end - line_start);
+
+            count += getSuppressedCountIncrement(line_start, line_len, found);
+
             size_t advance = (size_t)(found - cur) + patlen;
             cur = found + patlen;
             if (bytes_left < advance)
@@ -1639,5 +1715,11 @@ typedef T2ERROR (*updateLogSeekFunc)(hash_map_t *, const char *, const long, con
 updateLogSeekFunc updateLogSeekFuncCallback(void)
 {
     return updateLogSeek;
+}
+
+typedef int (*getSuppressedCountIncrementFunc)(const char *, size_t, const char *);
+getSuppressedCountIncrementFunc getSuppressedCountIncrementFuncCallback(void)
+{
+    return getSuppressedCountIncrement;
 }
 #endif

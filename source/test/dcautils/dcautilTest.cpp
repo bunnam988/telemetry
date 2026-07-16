@@ -2405,6 +2405,35 @@ typedef time_t (*extractUnixTimestampFunc)(const char*, size_t);
 extractUnixTimestampFunc extractUnixTimestampFuncCallback(void);
 typedef T2ERROR (*updateLogSeekFunc)(hash_map_t *, const char *, const long, const ino_t);
 updateLogSeekFunc updateLogSeekFuncCallback(void);
+typedef int (*getSuppressedCountIncrementFunc)(const char *, size_t, const char *);
+getSuppressedCountIncrementFunc getSuppressedCountIncrementFuncCallback(void);
+}
+
+static int suppressedCount(const char *line, const char *marker)
+{
+    return getSuppressedCountIncrementFuncCallback()(line, strlen(line), strstr(line, marker));
+}
+
+TEST(StaticGetSuppressedCountIncrement, CountsRepeatsFromSuppressionSummaries)
+{
+    EXPECT_EQ(48, suppressedCount("[WIFI] [SUPPRESS] \"Connection failed: timeout\" repeated 48 times (burst ~222 msg/s, 09:47:25-09:47:26)",
+                                  "Connection failed"));
+    EXPECT_EQ(6, suppressedCount("[DNS]   Suppressed: \"Retry attempt\" repeated 6 times", "Retry attempt"));
+    // The quoted message itself contains the count token; the last one is the real count
+    EXPECT_EQ(5, suppressedCount("[SUPPRESS] \"Request repeated 3 times\" repeated 5 times (periodic ~every 2s, 1-2)", "Request"));
+}
+
+TEST(StaticGetSuppressedCountIncrement, OtherLinesCountOnce)
+{
+    EXPECT_EQ(1, suppressedCount("[WIFI] Connection failed: timeout", "Connection failed"));
+    EXPECT_EQ(1, suppressedCount("[X] Retry repeated 3 times", "Retry"));
+    // Marker outside the quoted message of a summary line
+    EXPECT_EQ(1, suppressedCount("[SUPPRESS] 2-message pattern repeated 6 times (sporadic over 45s, a-b)", "message"));
+    EXPECT_EQ(1, suppressedCount("[SUPPRESS] \"evt\" repeated 99999999999 times (x)", "evt"));
+
+    // Summary cut off at the end of the mapped file
+    const char cut[] = { '[','S','U','P','P','R','E','S','S',']',' ','"','e','v','t','"',' ','r','e','p','e','a','t','e','d',' ','1','2' };
+    EXPECT_EQ(1, getSuppressedCountIncrementFuncCallback()(cut, sizeof(cut), cut + 12));
 }
 TEST(StaticStrnstrFunc, CoversMainBranches)
 {
